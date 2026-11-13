@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chip Chase</title>
+<style>
+  body { margin: 0; background: #2b2b33; color: #ddd; font-family: monospace; text-align: center; }
+  canvas { background: #7aa05a; display: block; margin: 12px auto; cursor: none; max-width: 100%; }
+  p { margin: 4px; }
+  button { font-family: monospace; margin: 4px; padding: 6px 10px; background: #44444f; color: #eee; border: 2px solid #66667a; border-radius: 6px; }
+  button:hover { background: #55556a; }
+  button:focus-visible, canvas:focus-visible { outline: 3px solid #f1c84b; outline-offset: 2px; }
+  #cards { margin: 6px; }
+  .card { min-width: 90px; }
+  .card small { display: block; color: #aab; }
+  #test { font-size: 12px; padding: 4px; }
+  .pass { color: #8fdc8f; }
+  .fail { color: #ff8a8a; }
+</style>
+</head>
+<body>
+<p>Move the mouse, or Tab to the field and use the arrow keys. The chip follows. Whoever touches it first eats it, then everyone goes back to start.</p>
+<canvas id="c" width="600" height="400" tabindex="0" role="application" aria-label="Pigeon field. Arrow keys move the chip."></canvas>
+<p id="msg" aria-live="polite">...</p>
+<p>Noise cards: Tab in, then Left and Right to choose, Enter or Space to play.</p>
+<div id="cards" role="toolbar" aria-label="Noise cards">
+  <button class="card" data-noise="crinkle" tabindex="0">Crinkle<small>all rush</small></button>
+  <button class="card" data-noise="whistle" tabindex="-1">Whistle<small>wakes Gus, Pearl stares</small></button>
+  <button class="card" data-noise="coo" tabindex="-1">Coo<small>everyone freezes</small></button>
+</div>
+<button id="again">Coax Dennis back</button>
+<p id="test">keyboard check: running...</p>
+<script>
+var canvas = document.getElementById("c");
+var ctx = canvas.getContext("2d");
+var msg = document.getElementById("msg");
+
+var bin = { x: 300, y: 200, r: 55 };
+var chip = { x: 500, y: 90, r: 6 };
+var target = { x: 500, y: 90 };
+
+var pigeons = [
+  { name: "Gus",    kind: "lazy",    sx: 60,  sy: 60,  r: 15, color: "#9aa0ab", speed: 1.2 },
+  { name: "Pearl",  kind: "sneaky",  sx: 540, sy: 340, r: 15, color: "#b4a9b8", speed: 1.8 },
+  { name: "Dennis", kind: "quitter", sx: 80,  sy: 340, r: 15, color: "#8c929c", speed: 1.9 }
+];
+
+var pause = 0;
+var boost = 0;
+var lastNews = "Go on, move the chip.";
+
+function resetPigeons(includeQuit) {
+  for (var i = 0; i < pigeons.length; i++) {
+    var p = pigeons[i];
+    if (p.quit && !includeQuit) continue;
+    p.x = p.sx; p.y = p.sy;
+    p.side = 0; p.rest = 0; p.lunge = false; p.freeze = 0;
+  }
+}
+for (var i = 0; i < pigeons.length; i++) { pigeons[i].quit = false; pigeons[i].score = 0; }
+resetPigeons(true);
+
+document.getElementById("again").addEventListener("click", function () {
+  for (var i = 0; i < pigeons.length; i++) { pigeons[i].quit = false; pigeons[i].score = 0; }
+  resetPigeons(true);
+  lastNews = "Dennis is back. He says he's not.";
+});
+
+// noise cards
+function playNoise(name) {
+  if (name === "crinkle") {
+    boost = 90;
+    lastNews = "Crinkle. Everyone heard a bag.";
+  } else if (name === "whistle") {
+    for (var i = 0; i < pigeons.length; i++) {
+      if (pigeons[i].kind === "lazy") pigeons[i].rest = 0;
+      if (pigeons[i].kind === "sneaky") pigeons[i].freeze = 60;
+    }
+    lastNews = "Whistle. Gus is awake. Pearl is staring.";
+  } else if (name === "coo") {
+    for (var i = 0; i < pigeons.length; i++) pigeons[i].freeze = 60;
+    lastNews = "Coo. Everyone stopped to be polite.";
+  }
+}
+var cards = Array.prototype.slice.call(document.querySelectorAll(".card"));
+cards.forEach(function (btn, idx) {
+  btn.addEventListener("click", function () { playNoise(btn.getAttribute("data-noise")); });
+  btn.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      // same function as click; preventDefault so the browser doesn't also click
+      e.preventDefault();
+      playNoise(btn.getAttribute("data-noise"));
+      return;
+    }
+    var n = -1;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") n = (idx + 1) % cards.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") n = (idx - 1 + cards.length) % cards.length;
+    else if (e.key === "Home") n = 0;
+    else if (e.key === "End") n = cards.length - 1;
+    if (n < 0) return;
+    e.preventDefault();
+    cards.forEach(function (b) { b.tabIndex = -1; });
+    cards[n].tabIndex = 0;
+    cards[n].focus();
+  });
+  // some browsers click a button on Space keyup; stop that so it only plays once
+  btn.addEventListener("keyup", function (e) {
+    if (e.key === " " || e.key === "Spacebar") e.preventDefault();
+  });
+});
+
+// keyboard moves the chip
+canvas.addEventListener("keydown", function (e) {
+  var step = 24, handled = true;
+  if (e.key === "ArrowLeft") target.x -= step;
+  else if (e.key === "ArrowRight") target.x += step;
+  else if (e.key === "ArrowUp") target.y -= step;
+  else if (e.key === "ArrowDown") target.y += step;
+  else handled = false;
+  if (handled) {
+    e.preventDefault();
+    target.x = Math.max(0, Math.min(canvas.width, target.x));
+    target.y = Math.max(0, Math.min(canvas.height, target.y));
+  }
+});
+
+function setTarget(clientX, clientY) {
+  var rect = canvas.getBoundingClientRect();
+  target.x = (clientX - rect.left) * (canvas.width / rect.width);
+  target.y = (clientY - rect.top) * (canvas.height / rect.height);
+}
+canvas.addEventListener("mousemove", function (e) { setTarget(e.clientX, e.clientY); });
+canvas.addEventListener("touchmove", function (e) {
+  e.preventDefault();
+  setTarget(e.touches[0].clientX, e.touches[0].clientY);
+}, { passive: false });
+
+function dist(a, b) {
+  return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+}
+
+function binDistFromPath(a, gx, gy) {
+  var sx = gx - a.x, sy = gy - a.y;
+  var len2 = sx * sx + sy * sy || 0.01;
+  var t = ((bin.x - a.x) * sx + (bin.y - a.y) * sy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  var px = a.x + sx * t, py = a.y + sy * t;
+  return Math.sqrt((bin.x - px) * (bin.x - px) + (bin.y - py) * (bin.y - py));
+}
+
+function pushOutOfBin(o) {
+  var dx = o.x - bin.x;
+  var dy = o.y - bin.y;
+  var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+  var min = bin.r + o.r;
+  if (d < min) {
+    o.x = bin.x + (dx / d) * min;
+    o.y = bin.y + (dy / d) * min;
+  }
+}
+
+function stepToward(p, gx, gy, speed) {
+  var dx = gx - p.x, dy = gy - p.y;
+  var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+  var vx = dx / d, vy = dy / d;
+
+  var blocked = binDistFromPath(p, gx, gy) < bin.r + p.r + 4;
+  if (blocked) {
+    var ux = p.x - bin.x, uy = p.y - bin.y;
+    var bd = Math.sqrt(ux * ux + uy * uy) || 0.01;
+    ux /= bd; uy /= bd;
+    if (p.side === 0) {
+      var cross = ux * dy - uy * dx;
+      p.side = cross > 0 ? 1 : -1;
+      if (Math.abs(cross) < 0.5) p.side = 1;
+    }
+    var tx = -uy * p.side, ty = ux * p.side;
+    var ring = bin.r + p.r + 6;
+    if (bd > ring + 30) {
+      vx = vx + tx * 0.9;
+      vy = vy + ty * 0.9;
+    } else {
+      vx = tx + ux * (ring - bd) * 0.08;
+      vy = ty + uy * (ring - bd) * 0.08;
+    }
+    var m = Math.sqrt(vx * vx + vy * vy) || 0.01;
+    vx /= m; vy /= m;
+  } else {
+    p.side = 0;
+  }
+  p.x += vx * speed;
+  p.y += vy * speed;
+}
+
+function update() {
+  chip.x += (target.x - chip.x) * 0.3;
+  chip.y += (target.y - chip.y) * 0.3;
+  pushOutOfBin(chip);
+
+  if (boost > 0) boost--;
+
+  if (pause > 0) {
+    pause--;
+  } else {
+    for (var i = 0; i < pigeons.length; i++) {
+      var p = pigeons[i];
+      if (p.quit) continue;
+      if (p.freeze > 0) { p.freeze--; continue; }
+
+      var gx = chip.x, gy = chip.y, sp = p.speed;
+
+      if (p.kind === "lazy") {
+        if (p.rest > 0) {
+          p.rest--;
+          sp = 0;
+        } else if (Math.random() < 0.012) {
+          p.rest = 40 + Math.floor(Math.random() * 60);
+          sp = 0;
+        }
+      }
+
+      if (p.kind === "sneaky") {
+        var bx = chip.x - bin.x, by = chip.y - bin.y;
+        var bl = Math.sqrt(bx * bx + by * by) || 0.01;
+        var behind = {
+          x: Math.max(10, Math.min(canvas.width - 10, chip.x + (bx / bl) * 36)),
+          y: Math.max(10, Math.min(canvas.height - 10, chip.y + (by / bl) * 36))
+        };
+        if (dist(p, behind) < 30) p.lunge = true;
+        if (dist(p, chip) > 140) p.lunge = false;
+        if (p.lunge) {
+          sp = p.speed * 1.6;
+        } else {
+          gx = behind.x; gy = behind.y;
+        }
+      }
+
+      if (boost > 0) sp *= 1.8;
+      if (sp > 0) stepToward(p, gx, gy, sp);
+    }
+  }
+
+  for (var i = 0; i < pigeons.length; i++) {
+    var p = pigeons[i];
+    pushOutOfBin(p);
+    for (var j = 0; j < pigeons.length; j++) {
+      if (j === i) continue;
+      var q = pigeons[j];
+      var ox = p.x - q.x, oy = p.y - q.y;
+      var od = Math.sqrt(ox * ox + oy * oy) || 0.01;
+      if (od < p.r + q.r) {
+        p.x += (ox / od) * 0.8;
+        p.y += (oy / od) * 0.8;
+      }
+    }
+    p.x = Math.max(p.r, Math.min(canvas.width - p.r, p.x));
+    p.y = Math.max(p.r, Math.min(canvas.height - p.r, p.y));
+  }
+
+  if (pause === 0) {
+    for (var i = 0; i < pigeons.length; i++) {
+      var w = pigeons[i];
+      if (w.quit) continue;
+      if (dist(w, chip) < w.r + chip.r) {
+        w.score++;
+        lastNews = w.name + " got the chip.";
+        for (var k = 0; k < pigeons.length; k++) {
+          if (pigeons[k] !== w && pigeons[k].kind === "quitter" && !pigeons[k].quit) {
+            pigeons[k].quit = true;
+            lastNews += " " + pigeons[k].name + " has quit. For good.";
+          }
+        }
+        pause = 70;
+        boost = 0;
+        resetPigeons(false);
+        break;
+      }
+    }
+  }
+
+  var s = "";
+  for (var i = 0; i < pigeons.length; i++) s += pigeons[i].name + " " + pigeons[i].score + "   ";
+  var text = lastNews + "   |   " + s;
+  if (msg.textContent !== text) {
+    msg.textContent = text;
+  }
+}
+
+function circle(x, y, r, color) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  circle(bin.x, bin.y, bin.r, "#444a52");
+  circle(bin.x, bin.y, bin.r - 10, "#2e3238");
+  ctx.fillStyle = "#888";
+  ctx.font = "14px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("BIN", bin.x, bin.y + 5);
+
+  for (var i = 0; i < pigeons.length; i++) {
+    var p = pigeons[i];
+    var col = p.color;
+    var label = p.name;
+    if (p.quit) { col = "#5d6a8a"; label = "hmph"; }
+    else if (p.freeze > 0) { label = "..."; }
+    else if (p.kind === "lazy" && p.rest > 0) { label = "zzz"; }
+    else if (p.kind === "sneaky") { col = p.lunge ? "#d9a0c0" : "#8f7f99"; if (p.lunge) label = "!!"; }
+    circle(p.x, p.y, p.r, col);
+    var a = Math.atan2(chip.y - p.y, chip.x - p.x);
+    if (p.quit) a += Math.PI;
+    circle(p.x + Math.cos(a) * (p.r + 3), p.y + Math.sin(a) * (p.r + 3), 4, "#e0a040");
+    circle(p.x + Math.cos(a) * 6 - Math.sin(a) * 5, p.y + Math.sin(a) * 6 + Math.cos(a) * 5, 2, "#111");
+    ctx.fillStyle = "#fff";
+    ctx.font = "12px monospace";
+    ctx.fillText(label, p.x, p.y - p.r - 6);
+  }
+
+  circle(chip.x, chip.y, chip.r, "#f1c84b");
+  circle(chip.x - 1, chip.y - 1, 2, "#fbe9a0");
+}
+
+// load-time keyboard self-test: sends fake key presses and checks the result
+function keyTest() {
+  var results = [];
+  function press(el, key) {
+    var ev = new KeyboardEvent("keydown", { key: key, bubbles: true, cancelable: true });
+    el.dispatchEvent(ev);
+    return ev;
+  }
+  function check(name, ok) { results.push({ name: name, ok: !!ok }); }
+
+  var saveT = { x: target.x, y: target.y };
+  var saveBoost = boost, saveNews = lastNews;
+
+  target.x = 100; target.y = 100;
+  press(canvas, "ArrowRight"); check("Right moves chip +24", target.x === 124 && target.y === 100);
+  press(canvas, "ArrowLeft");  check("Left moves chip -24", target.x === 100);
+  press(canvas, "ArrowDown");  check("Down moves chip +24", target.y === 124);
+  press(canvas, "ArrowUp");    check("Up moves chip -24", target.y === 100);
+  target.x = 0;
+  press(canvas, "ArrowLeft");  check("Left stops at the edge", target.x === 0);
+  target.x = saveT.x; target.y = saveT.y;
+
+  var crinkle = cards[0];
+  boost = 0; press(crinkle, "Enter");
+  check("Enter plays the card", boost === 90);
+  boost = 0; press(crinkle, " ");
+  check("Space plays the card", boost === 90);
+  boost = 0; press(crinkle, "a");
+  check("Other keys do nothing", boost === 0);
+  boost = saveBoost; lastNews = saveNews;
+
+  press(cards[0], "ArrowRight");
+  check("Right moves to card 2", cards[1].tabIndex === 0 && cards[0].tabIndex === -1);
+  press(cards[1], "ArrowLeft");
+  press(cards[0], "ArrowLeft");
+  check("Left wraps to last card", cards[2].tabIndex === 0);
+  press(cards[2], "Home");
+  check("Home goes back to first", cards[0].tabIndex === 0 && cards[1].tabIndex === -1 && cards[2].tabIndex === -1);
+
+  var bad = results.filter(function (r) { return !r.ok; });
+  var el = document.getElementById("test");
+  if (bad.length === 0) {
+    el.className = "pass";
+    el.textContent = "keyboard check: all " + results.length + " passed";
+  } else {
+    el.className = "fail";
+    el.textContent = "keyboard check FAILED: " + bad.map(function (r) { return r.name; }).join("; ");
+  }
+}
+try { keyTest(); } catch (err) {
+  var te = document.getElementById("test");
+  te.className = "fail";
+  te.textContent = "keyboard check crashed: " + err.message;
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
